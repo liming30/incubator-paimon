@@ -37,8 +37,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
@@ -73,6 +75,8 @@ public abstract class AlignedSourceReader
 
     private final TreeSet<Long> pendingCheckpoints;
 
+    private final Set<Long> triggeredCheckpoints;
+
     private final TreeMap<Long, Long> nextSnapshotPerCheckpoint;
 
     private final long scanInterval;
@@ -99,6 +103,7 @@ public abstract class AlignedSourceReader
         this.readBuilder = readBuilder;
         this.pendingSplits = new FutureCompletingBlockingDeque<>();
         this.pendingCheckpoints = new TreeSet<>();
+        this.triggeredCheckpoints = new HashSet<>();
         this.availabilityFuture = (CompletableFuture<Void>) AVAILABLE;
         this.nextSnapshotPerCheckpoint = new TreeMap<>();
         this.scanInterval = scanInterval;
@@ -200,6 +205,7 @@ public abstract class AlignedSourceReader
         if (shouldTriggerCheckpoint(blocking)) {
             Long checkpoint = pendingCheckpoints.pollFirst();
             if (checkpoint != null) {
+                triggeredCheckpoints.add(checkpoint);
                 return Optional.of(checkpoint);
             }
         }
@@ -224,14 +230,17 @@ public abstract class AlignedSourceReader
         Long nextSnapshotId = nextSnapshotPerCheckpoint.get(checkpointId);
         scan.notifyCheckpointComplete(nextSnapshotId);
         nextSnapshotPerCheckpoint.headMap(checkpointId, true).clear();
+        triggeredCheckpoints.remove(checkpointId);
     }
 
     @Override
     public void notifyCheckpointAborted(long checkpointId) throws Exception {
-        if (!pendingCheckpoints.contains(checkpointId)) {
+        if (triggeredCheckpoints.remove(checkpointId)) {
+            LOG.debug("Handle aborted checkpoint {}", checkpointId);
             // checkpoint has been triggered from source
             handleCheckpointAborted(checkpointId);
         } else {
+            LOG.debug("Remove not triggered checkpoint {}", checkpointId);
             // checkpoint may not been triggered from source
             pendingCheckpoints.remove(checkpointId);
         }
